@@ -1,0 +1,609 @@
+<html>
+  <head>
+    <meta charset=utf-8 />
+    <title>Map Lightbox - DOM El</title>
+    <meta name='viewport' content='initial-scale=1,maximum-scale=1,user-scalable=no' />
+
+    <script src='https://api.tiles.mapbox.com/mapbox-gl-js/v0.20.1/mapbox-gl.js'></script>
+    <script src='https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.13.1/lodash.min.js'></script>
+
+    <link href='https://api.tiles.mapbox.com/mapbox-gl-js/v0.20.1/mapbox-gl.css' rel='stylesheet' />
+
+    <style>
+      body { margin:0; padding:0; }
+      #map { position:absolute; top:0; bottom:0; width:100%; }
+
+      #status {
+        position: absolute;
+        z-index: 99999;
+        bottom: 0;
+        right: 0;
+        width: 300px;
+        padding: 1rem;
+        background-color: rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+        font-family: 'monospace';
+        font-size: 12px;
+      }
+      #status p {
+        font-weight: 700;
+      }
+      #status span {
+        font-weight: normal;
+      }
+      #open {
+        pointer-events: all;
+      }
+
+      .lightbox-container * {
+        pointer-events: none;
+      }
+
+      .base {
+        position: absolute;
+        z-index: 9999;
+      }
+
+      .highlight {
+        background-color: rgba(0, 0, 0, 0.4);
+      }
+
+      .ghost {
+        background-color: rgba(255, 0, 0, 0.4);
+      }
+
+      .handle-ne {
+        background-color: rgba(0, 0, 0, 0.4);
+        border-radius: 40px;
+      }
+      .handle-sw {
+        background-color: rgba(0, 0, 0, 0.4);
+        border-radius: 40px;
+      }
+      .handle-se {
+        background-color: rgba(0, 0, 0, 0.4);
+        border-radius: 40px;
+      }
+
+      .lightbox-close-el {
+        background-color: blue;
+        width: 16px;
+        height: 16px;
+        margin-top: -8px;
+        margin-left: -8px;
+      }
+    </style>
+
+    <script>
+    mapboxgl.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpbG10dnA3NzY3OTZ0dmtwejN2ZnUycjYifQ.1W5oTOnWXQ9R1w8u3Oo1yA';
+    </script>
+  </head>
+
+<body>
+<div id='map'></div>
+<div id="status">
+  <p>dragging: <span data-hook='dragging'></span></p>
+  <p>over: <span data-hook='hover'></span></p>
+  <p>over handle: <span data-hook='over:handle'></span></p>
+  <p>drag handle: <span data-hook='dragging:handle'></span></p>
+  <p>mouse: <span data-hook='mouse:point'></span></p>
+  <p>mouse: <span data-hook='mouse:coords'></span></p>
+  <p>ne: <span data-hook='handle:ne'></span></p>
+  <p>sw: <span data-hook='handle:sw'></span></p>
+  <button id='open'>open</button>
+</div>
+
+<script>
+  function log (key, value) {
+    document.querySelector('[data-hook="' + key + '"]').innerHTML = value;
+  }
+
+  function LightBox (options) {
+    this.options = _.extend({}, this.options, options);
+  }
+
+  LightBox.prototype = mapboxgl.util.inherit(mapboxgl.Control, {
+    options: {
+      width: 100,
+      height: 100
+    },
+
+    map: null,
+
+    // Store box central position.
+    centerLngLat: null,
+
+    // Store bounds. Always in lng/lat.
+    ne: null,
+    sw: null,
+
+    // Control for boxDragging.
+    isDragging: false,
+    // Control for boxOver.
+    isOverBox: false,
+
+    // Used to calculate the deltas.
+    prevMouseCoords: null,
+
+    // DOM elements.
+    lightboxContainer: null,
+    lEl: null,
+    rEl: null,
+    tEl: null,
+    bEl: null,
+    ghostEl: null,
+
+    resizeHandles: {
+      ne: null,
+      sw: null,
+      se: null
+    },
+
+    onAdd: function (map) {
+      this.map = map;
+      this.container = map.getCanvasContainer();
+      this.container.style.cursor = 'auto';
+
+      this.lightboxContainer = document.createElement('div');
+      this.lightboxContainer.className = 'lightbox-container';
+      this.lightboxContainer.style.display = 'none';
+
+      this.lEl = document.createElement('div');
+      this.lEl.className = 'base highlight';
+      this.rEl = document.createElement('div');
+      this.rEl.className = 'base highlight';
+      this.tEl = document.createElement('div');
+      this.tEl.className = 'base highlight';
+      this.bEl = document.createElement('div');
+      this.bEl.className = 'base highlight';
+
+      this.ghostEl = document.createElement('div');
+      this.ghostEl.className = 'base ghost';
+
+      this.handleContainer = document.createElement('div');
+      this.handleContainer.className = 'lightbox-handle-container';
+
+      this.lightboxContainer.appendChild(this.lEl);
+      this.lightboxContainer.appendChild(this.rEl);
+      this.lightboxContainer.appendChild(this.tEl);
+      this.lightboxContainer.appendChild(this.bEl);
+      this.lightboxContainer.appendChild(this.ghostEl);
+      this.lightboxContainer.appendChild(this.handleContainer);
+
+      this.container.appendChild(this.lightboxContainer);
+
+      this.resizeHandles.ne = new LightBoxHandle({
+        map: this.map,
+        container: this.handleContainer,
+        className: 'base handle handle-ne'
+      });
+
+      this.resizeHandles.sw = new LightBoxHandle({
+        map: this.map,
+        container: this.handleContainer,
+        className: 'base handle handle-sw'
+      });
+
+      this.resizeHandles.se = new LightBoxHandle({
+        map: this.map,
+        container: this.handleContainer,
+        className: 'base handle handle-se'
+      });
+
+      // Add close btn.
+      this.closeEl = document.createElement('div');
+      this.closeEl.className = 'base lightbox-close-el';
+      this.closeEl.style.pointerEvents = 'all';
+
+      this.lightboxContainer.appendChild(this.closeEl);
+    },
+
+    enable: function () {
+      this._setupEvents();
+
+      this.lightboxContainer.style.display = '';
+
+      this.centerLngLat = this.map.getCenter();
+
+      this._positionEls();
+
+      // Compute the bound box coordinates from central lngLat.
+      [this.ne, this.sw] = this._computeBounds(this.centerLngLat, this.options.width, this.options.height);
+
+      // Handles
+      this._positionHandles();
+    },
+
+    disable: function () {
+      this._destroyEvents();
+
+      this.lightboxContainer.style.display = 'none';
+    },
+
+    getCloseEl: function () {
+      return this.closeEl;
+    },
+
+    _getPixelBounds: function () {
+      var centerPX = this.map.project(this.centerLngLat);
+
+      var ne = centerPX.clone();
+      ne.x -= this.options.width / 2;
+      ne.y -= this.options.height / 2;
+
+      var sw = centerPX.clone();
+      sw.x += this.options.width / 2;
+      sw.y += this.options.height / 2;
+
+      return {
+        ne: ne,
+        sw: sw
+      };
+    },
+
+    _positionEls: function () {
+      let centerPX = this.map.project(this.centerLngLat);
+      let w = this.options.width;
+      let h = this.options.height;
+
+      let ne = centerPX;
+      ne.x -= w / 2;
+      ne.y -= h / 2;
+
+      this.lEl.style.top = 0;
+      this.lEl.style.bottom = 0;
+      this.lEl.style.left = 0;
+      this.lEl.style.width = ne.x <= 0 ? 0 : ne.x;
+
+      this.rEl.style.top = 0;
+      this.rEl.style.bottom = 0;
+      this.rEl.style.right = 0;
+      this.rEl.style.left = ne.x + w;
+
+      this.tEl.style.top = 0;
+      this.tEl.style.left = ne.x;
+      this.tEl.style.height = ne.y <= 0 ? 0 : ne.y;
+      this.tEl.style.width = w;
+
+      this.bEl.style.top = ne.y + h;
+      this.bEl.style.left = ne.x;
+      this.bEl.style.bottom = 0;
+      this.bEl.style.width = w;
+
+      this.ghostEl.style.top = ne.y;
+      this.ghostEl.style.left = ne.x;
+      this.ghostEl.style.height = h;
+      this.ghostEl.style.width = w;
+
+      this.closeEl.style.top = ne.y;
+      this.closeEl.style.left = ne.x + w;
+    },
+
+    _positionHandles: function () {
+      this.resizeHandles.ne.position(this.ne);
+      this.resizeHandles.sw.position(this.sw);
+      this.resizeHandles.se.position({
+        lng: this.ne.lng,
+        lat: this.sw.lat
+      });
+    },
+
+    _setupEvents: function () {
+      this._evtOnMouseMove = _.throttle(this._evtOnMouseMove.bind(this), 10);
+      this.map.on('mousemove', this._evtOnMouseMove);
+
+        // Set `true` to dispatch the event before other functions call it. This
+        // is necessary for disabling the default map dragging behaviour.
+      this.map.on('mousedown', this._evtOnDown.bind(this), true);
+      this.map.on('mouseup', this._evtOnUp.bind(this));
+      this.map.on('zoom', this._evtOnZoom.bind(this));
+      this.map.on('move', this._evtOnMapMove.bind(this));
+    },
+
+    _destroyEvents: function () {
+      this.map.off('mousemove', this._evtOnMouseMove);
+      this.map.off('mousedown', this._evtOnDown);
+      this.map.off('mouseup', this._evtOnUp);
+      this.map.off('zoom', this._evtOnZoom);
+      this.map.off('move', this._evtOnMapMove);
+    },
+
+    _evtOnMapMove: function (e) {
+      this._positionEls();
+      this._positionHandles();
+    },
+
+    _evtOnMouseMove: function (e) {
+      log('mouse:point', 'x: ' + e.point.x + ', y:' + e.point.y);
+      log('mouse:coords', 'lng: ' + e.lngLat.lng + ', lat:' + e.lngLat.lat);
+
+      if (this.isDragging || this._isDraggingHandle()) {
+        return this._onDrag(e);
+      } else {
+        let handleOverState = this._checkOverHandle(e.point);
+        log('over:handle', handleOverState);
+        if (handleOverState) {
+          this.container.style.cursor = 'nwse-resize';
+          this.map.dragPan.disable();
+          return;
+        }
+
+        // Reset stored coords.
+        this.prevMouseCoords = null;
+
+        // Check if in square.
+        let {x, y} = e.point;
+        let bounds = this._getPixelBounds();
+
+        let left = Math.min(bounds.ne.x, bounds.sw.x);
+        let top = Math.min(bounds.ne.y, bounds.sw.y);
+        let right = Math.max(bounds.ne.x, bounds.sw.x);
+        let bottom = Math.max(bounds.ne.y, bounds.sw.y);
+
+        if (x >= left && x <= right && y >= top && y <= bottom) {
+          this.isOverBox = true;
+          log('hover', true);
+          this.container.style.cursor = 'move';
+          this.map.dragPan.disable();
+        } else {
+          this.isOverBox = false;
+          log('hover', false);
+          this.container.style.cursor = '';
+          this.map.dragPan.enable();
+        }
+      }
+    },
+
+    _evtOnZoom: function (e) {
+      // Compute new size.
+      let nePx = this.map.project(this.ne);
+      let swPx = this.map.project(this.sw);
+
+      this.options.width = Math.abs(swPx.x - nePx.x);
+      this.options.height = Math.abs(swPx.y - nePx.y);
+
+      this._positionEls();
+      this._positionHandles();
+    },
+
+    _evtOnDown: function (e) {
+      if (this._isOverHandle()) {
+        return this._setOverHandleAsDragging();
+      }
+
+      if (!this.isOverBox) return;
+
+      this.isDragging = true;
+      log('dragging', true);
+
+      // Set a cursor indicator
+      // canvas.style.cursor = 'grab';
+    },
+
+    _evtOnUp: function (e) {
+      // if (!this.isDragging) return;
+      this._resetHandleSate();
+      // canvas.style.cursor = '';
+      this.isDragging = false;
+      log('dragging', false);
+    },
+
+    _onDrag: function (e) {
+      // Handle everything in px to avoid coords related distortion.
+      let currCoords = e.point;
+      if (!this.prevMouseCoords) {
+        this.prevMouseCoords = currCoords;
+      }
+
+      let dx = currCoords.x - this.prevMouseCoords.x;
+      let dy = currCoords.y - this.prevMouseCoords.y;
+
+      let nePx = this.map.project(this.ne);
+      let swPx = this.map.project(this.sw);
+
+      if (this.resizeHandles.ne.isDragging) {
+        // Stop weird mouse dragging.
+        let pastRight = nePx.x + 5 > swPx.x;
+        if (nePx.x + 20 < e.point.x && pastRight) {
+          dx = 0;
+        }
+
+        let pastBottom = nePx.y + 5 > swPx.y;
+        if (nePx.y + 20 < e.point.y && pastBottom) {
+          dy = 0;
+        }
+
+        // Update bounds position.
+        nePx.x += dx;
+        nePx.x = nePx.x > swPx.x ? swPx.x : nePx.x;
+        nePx.y += dy;
+        nePx.y = nePx.y > swPx.y ? swPx.y : nePx.y;
+      } else if (this.resizeHandles.sw.isDragging) {
+        // Stop weird mouse dragging.
+        let pastLeft = swPx.x - 5 < nePx.x;
+        if (swPx.x - 20 > e.point.x && pastLeft) {
+          dx = 0;
+        }
+
+        let pastTop = swPx.y - 5 < nePx.y;
+        if (swPx.y - 20 > e.point.y && pastTop) {
+          dy = 0;
+        }
+
+        // Update bounds position.
+        swPx.x += dx;
+        swPx.x = swPx.x < nePx.x ? nePx.x : swPx.x;
+        swPx.y += dy;
+        swPx.y = swPx.y < nePx.y ? nePx.y : swPx.y;
+      } else if (this.resizeHandles.se.isDragging) {
+        // Stop weird mouse dragging.
+        let pastRight = nePx.x + 5 > swPx.x;
+        if (nePx.x + 20 < e.point.x && pastRight) {
+          dx = 0;
+        }
+
+        let pastTop = swPx.y - 5 < nePx.y;
+        if (swPx.y - 20 > e.point.y && pastTop) {
+          dy = 0;
+        }
+
+        // Update bounds position.
+        nePx.x += dx;
+        nePx.x = nePx.x > swPx.x ? swPx.x : nePx.x;
+        swPx.y += dy;
+        swPx.y = swPx.y < nePx.y ? nePx.y : swPx.y;
+      } else {
+        nePx.x += dx;
+        nePx.y += dy;
+        swPx.x += dx;
+        swPx.y += dy;
+      }
+
+      // Calc new box dimensions from the bounds.
+      this.options.width = Math.abs(swPx.x - nePx.x);
+      this.options.height = Math.abs(swPx.y - nePx.y);
+
+      // Calc the central point using px.
+      let centerPx = nePx.clone();
+      centerPx.x += this.options.width / 2;
+      centerPx.y += this.options.height / 2;
+
+      // Unproject.
+      this.centerLngLat = this.map.unproject(centerPx);
+
+      // Update the new box bounds from the central point and dimensions.
+      [this.ne, this.sw] = this._computeBounds(this.centerLngLat, this.options.width, this.options.height);
+
+      // Position the elements.
+      this._positionEls();
+      this._positionHandles();
+
+      this.prevMouseCoords = currCoords;
+    },
+
+    // Compute bounds from central lngLat and box size.
+    _computeBounds: function (lngLat, w, h) {
+      let dl = -(w / 2);
+      let dt = -(h / 2);
+      let dr = w / 2;
+      let db = h / 2;
+      return this._projectBounds([lngLat, lngLat], dl, dt, dr, db);
+    },
+
+    // Update the given bounds according to direction deltas.
+    _projectBounds: function (bounds, dl, dt, dr, db) {
+      let [ne, sw] = bounds;
+      let nePx = this.map.project(ne);
+      let swPx = this.map.project(sw);
+
+      nePx.x += dl;
+      nePx.y += dt;
+      swPx.x += dr;
+      swPx.y += db;
+
+      return [this.map.unproject(nePx), this.map.unproject(swPx)];
+    },
+
+
+
+    _checkOverHandle: function (point) {
+      return _.some(this.resizeHandles, (handle) => handle.checkOver(point));
+    },
+
+    _isOverHandle: function () {
+      return _.some(this.resizeHandles, (handle) => handle.isOver);
+    },
+
+    _setOverHandleAsDragging: function () {
+      _.forEach(this.resizeHandles, (handle) => {
+        if (handle.isOver) {
+          handle.isDragging = true;
+          log('dragging:handle', true);
+        }
+      });
+    },
+
+    _isDraggingHandle: function () {
+      return _.some(this.resizeHandles, (handle) => handle.isDragging);
+    },
+
+    _resetHandleSate: function () {
+      _.forEach(this.resizeHandles, (handle) => {
+        handle.isDragging = false;
+      });
+      log('dragging:handle', false);
+    }
+  });
+
+  function LightBoxHandle (options) {
+    this.options = {
+      width: 10,
+      height: 10
+    };
+
+    this.options = _.extend({}, this.options, options);
+
+    this.map = this.options.map;
+
+    this.isOver = false;
+    this.isDragging = false;
+    this.anchorLngLat = null;
+
+    // Add element
+    this.handleEl = document.createElement('div');
+    this.handleEl.className = this.options.className;
+    this.options.container.appendChild(this.handleEl);
+
+    this.position = function (lnglat) {
+      this.anchorLngLat = lnglat;
+      var anchorPx = this.map.project(lnglat);
+      anchorPx.x -= this.options.width / 2;
+      anchorPx.y -= this.options.height / 2;
+
+      this.handleEl.style.top = anchorPx.y;
+      this.handleEl.style.left = anchorPx.x;
+      this.handleEl.style.height = this.options.width;
+      this.handleEl.style.width = this.options.height;
+    };
+
+    this.checkOver = function (point) {
+      let {x, y} = this.map.project(this.anchorLngLat);
+
+      let l = x - this.options.width / 2;
+      let t = y - this.options.height / 2;
+      let r = x + this.options.width / 2;
+      let b = y + this.options.height / 2;
+
+      this.isOver = (point.x >= l && point.x <= r && point.y >= t && point.y <= b);
+      return this.isOver;
+    };
+  }
+
+</script>
+
+
+<script>
+var map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/streets-v9',
+  center: [-98, 38.88],
+  minZoom: 2,
+  zoom: 3
+});
+
+// Disable default box zooming.
+map.boxZoom.disable();
+
+var lightBox = new LightBox();
+map.addControl(lightBox);
+
+document.getElementById('open').addEventListener('click', () => lightBox.enable());
+lightBox.getCloseEl().addEventListener('click', () => lightBox.disable());
+
+map.on('load', function () {
+  // lightBox.enable();
+});
+
+</script>
+</body>
+</html>

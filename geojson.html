@@ -1,0 +1,198 @@
+<html>
+  <head>
+    <meta charset=utf-8 />
+    <title>Map Lightbox - GeoJSON</title>
+    <meta name='viewport' content='initial-scale=1,maximum-scale=1,user-scalable=no' />
+
+    <script src='https://api.tiles.mapbox.com/mapbox-gl-js/v0.20.1/mapbox-gl.js'></script>
+    <script src='https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.13.1/lodash.min.js'></script>
+
+    <link href='https://api.tiles.mapbox.com/mapbox-gl-js/v0.20.1/mapbox-gl.css' rel='stylesheet' />
+    <style>
+      body { margin:0; padding:0; }
+      #map { position:absolute; top:0; bottom:0; width:100%; }
+    </style>
+    <script>
+    mapboxgl.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpbG10dnA3NzY3OTZ0dmtwejN2ZnUycjYifQ.1W5oTOnWXQ9R1w8u3Oo1yA';
+    </script>
+  </head>
+<body>
+<div id='map'></div>
+
+<script>
+var map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/streets-v9',
+  center: [-98, 38.88],
+  minZoom: 2,
+  zoom: 3
+});
+
+// Disable default box zooming.
+map.boxZoom.disable();
+
+// Holds mousedown state for events. if this
+// flag is active, we move the point on `mousemove`.
+var isDragging;
+
+// Is the cursor over a point? if this
+// flag is active, we listen for a mousedown event.
+var isCursorOverPoint;
+
+var canvas = map.getCanvasContainer();
+
+var ghostGeoJSON = {};
+
+var prevCoords = null;
+
+map.on('load', function () {
+  // If a feature is found on map movement,
+  // set a flag to permit a mousedown events.
+  map.on('mousemove', _.throttle(onMove, 75));
+
+  // Set `true` to dispatch the event before other functions call it. This
+  // is necessary for disabling the default map dragging behaviour.
+  map.on('mousedown', mouseDown, true);
+  map.on('mouseup', onUp);
+
+  console.log('map', map);
+  var center = map.getCenter();
+  var centerPX = map.project(center);
+
+  var ne = centerPX.clone();
+  ne.x -= 50;
+  ne.y -= 50;
+
+  var sw = centerPX.clone();
+  sw.x += 50;
+  sw.y += 50;
+
+  ne = map.unproject(ne);
+  sw = map.unproject(sw);
+
+  var left = ne.lng;
+  var top = ne.lat;
+  var right = sw.lng;
+  var bottom = sw.lat;
+
+  ghostGeoJSON = getGhostGeoJSON(left, top, right, bottom);
+
+  map.addSource('ghost', {
+    'type': 'geojson',
+    'data': ghostGeoJSON
+  });
+
+  map.addLayer({
+    'id': 'route',
+    'type': 'fill',
+    'source': 'ghost',
+    'layout': {},
+    'paint': {
+      'fill-color': '#088',
+      'fill-opacity': 0.8
+    }
+  });
+
+  // // // // //
+  function onMove (e) {
+    if (isDragging) {
+      var currCoords = e.lngLat;
+      if (!prevCoords) {
+        prevCoords = currCoords;
+      }
+
+
+
+      var dLng = currCoords.lng - prevCoords.lng;
+      var dLat = currCoords.lat - prevCoords.lat;
+
+      // Set a UI indicator for dragging.
+      // canvas.style.cursor = 'grabbing';
+
+      // console.log('dLng, dLat', dLng, dLat);
+
+      // Update the Point feature in `geojson` coordinates
+      // and call setData to the source layer `point` on it.
+      // geojson.features[0].geometry.coordinates = [coords.lng, coords.lat];
+      let left = ghostGeoJSON.geometry.coordinates[1][0][0] + dLng;
+      let top = ghostGeoJSON.geometry.coordinates[1][2][1] + dLat;
+      let right = ghostGeoJSON.geometry.coordinates[1][2][0] + dLng;
+      let bottom = ghostGeoJSON.geometry.coordinates[1][0][1] + dLat;
+
+      ghostGeoJSON = getGhostGeoJSON(left, top, right, bottom);
+      map.getSource('ghost').setData(ghostGeoJSON);
+
+
+
+      prevCoords = currCoords;
+    } else {
+      prevCoords = null;
+      // Check if in square.
+      let {lng, lat} = e.lngLat;
+
+      let left = ghostGeoJSON.geometry.coordinates[1][0][0];
+      let top = ghostGeoJSON.geometry.coordinates[1][2][1];
+      let right = ghostGeoJSON.geometry.coordinates[1][2][0];
+      let bottom = ghostGeoJSON.geometry.coordinates[1][0][1];
+
+      if (lng >= left && lng <= right &&
+          lat <= top && lat >= bottom) {
+        isCursorOverPoint = true;
+        console.log('isCursorOverPoint', true);
+        canvas.style.cursor = 'move';
+        map.dragPan.disable();
+      } else {
+        isCursorOverPoint = false;
+        console.log('isCursorOverPoint', false);
+        canvas.style.cursor = '';
+        map.dragPan.enable();
+      }
+    }
+  }
+
+  function mouseDown (e) {
+    if (!isCursorOverPoint) return;
+
+    isDragging = true;
+    console.log('isDragging', true);
+
+    // Set a cursor indicator
+    canvas.style.cursor = 'grab';
+  }
+
+  function onUp (e) {
+    if (!isDragging) return;
+
+    canvas.style.cursor = '';
+    isDragging = false;
+    console.log('isDragging', false);
+  }
+});
+
+function getGhostGeoJSON (left, top, right, bottom) {
+  return {
+    'type': 'Feature',
+    'geometry': {
+      'type': 'Polygon',
+      'coordinates': [
+        [
+          [-180, -90],
+          [-180, 90],
+          [180, 90],
+          [180, -90],
+          [-180, -90]
+        ],
+        [
+          [left, bottom],
+          [left, top],
+          [right, top],
+          [right, bottom],
+          [left, bottom]
+        ]
+      ]
+    }
+  };
+}
+</script>
+</body>
+</html>

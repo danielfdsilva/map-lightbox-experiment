@@ -1,0 +1,482 @@
+<html>
+  <head>
+    <meta charset=utf-8 />
+    <title>Map Lightbox - GeoJSON px</title>
+    <meta name='viewport' content='initial-scale=1,maximum-scale=1,user-scalable=no' />
+
+    <script src='https://api.tiles.mapbox.com/mapbox-gl-js/v0.20.1/mapbox-gl.js'></script>
+    <script src='https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.13.1/lodash.min.js'></script>
+
+    <link href='https://api.tiles.mapbox.com/mapbox-gl-js/v0.20.1/mapbox-gl.css' rel='stylesheet' />
+    <style>
+      body { margin:0; padding:0; }
+      #map { position:absolute; top:0; bottom:0; width:100%; }
+
+      #status {
+        position: absolute;
+        z-index: 99999;
+        bottom: 0;
+        right: 0;
+        width: 300px;
+        padding: 1rem;
+        background-color: rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+        font-family: 'monospace';
+        font-size: 12px;
+      }
+      #status p {
+        font-weight: 700;
+      }
+      #status span {
+        font-weight: normal;
+      }
+    </style>
+    <script>
+    mapboxgl.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpbG10dnA3NzY3OTZ0dmtwejN2ZnUycjYifQ.1W5oTOnWXQ9R1w8u3Oo1yA';
+    </script>
+  </head>
+<body>
+
+<div id='map'></div>
+<div id="status">
+  <p>dragging: <span data-hook='dragging'></span></p>
+  <p>over: <span data-hook='hover'></span></p>
+  <p>over handle: <span data-hook='over:handle'></span></p>
+  <p>drag handle: <span data-hook='dragging:handle'></span></p>
+  <p>mouse: <span data-hook='mouse:point'></span></p>
+  <p>mouse: <span data-hook='mouse:coords'></span></p>
+  <p>ne: <span data-hook='handle:ne'></span></p>
+  <p>sw: <span data-hook='handle:sw'></span></p>
+</div>
+
+<script>
+
+  function log (key, value) {
+    document.querySelector('[data-hook="' + key + '"]').innerHTML = value;
+  }
+
+  function LightBox (options) {
+    this.options = _.extend({}, this.options, options);
+  }
+
+  LightBox.prototype = mapboxgl.util.inherit(mapboxgl.Control, {
+    options: {
+      width: 50,
+      height: 50
+    },
+
+    map: null,
+
+    // Store bounds. Always in lng/lat.
+    ne: null,
+    sw: null,
+
+    // Control for boxDragging.
+    isDragging: false,
+    // Control for boxOver.
+    isOverBox: false,
+
+    // Used to calculate the deltas.
+    // Always in px.
+    prevMouseCoords: null,
+
+    resizeHandles: {
+      ne: null
+    },
+
+    onAdd: function (map) {
+      this.map = map;
+      let container = map.getCanvasContainer();
+      container.style.cursor = 'auto';
+    },
+
+    enable: function () {
+      this._setupEvents();
+
+      let centerPX = this.map.project(this.map.getCenter());
+
+      let nePx = centerPX.clone();
+      nePx.x -= this.options.width;
+      nePx.y -= this.options.height;
+
+      let swPx = centerPX.clone();
+      swPx.x += this.options.width;
+      swPx.y += this.options.height;
+
+      this.ne = this.map.unproject(nePx);
+      this.sw = this.map.unproject(swPx);
+
+      this.resizeHandles.ne = new LightBoxHandle({
+        map: this.map,
+        anchor: this.ne
+      });
+      this.resizeHandles.sw = new LightBoxHandle({
+        map: this.map,
+        anchor: this.sw
+      });
+
+      this.map.addSource('ghost', {
+        'type': 'geojson',
+        'data': this._getHighlightFeature(this.ne.lng, this.ne.lat, this.sw.lng, this.sw.lat)
+      });
+
+      this.map.addLayer({
+        'id': 'route',
+        'type': 'fill',
+        'source': 'ghost',
+        'layout': {},
+        'paint': {
+          'fill-color': '#088',
+          'fill-opacity': 0.8
+        }
+      });
+
+      // // DEBUG DEBUG__handles.
+      this.DEBUG__handles();
+    },
+
+    _setupEvents: function () {
+      this.map.on('mousemove', _.throttle(this._evtOnMove.bind(this), 75));
+
+        // Set `true` to dispatch the event before other functions call it. This
+        // is necessary for disabling the default map dragging behaviour.
+      this.map.on('mousedown', this._evtOnDown.bind(this), true);
+      this.map.on('mouseup', this._evtOnUp.bind(this));
+      this.map.on('zoom', this._evtOnZoom.bind(this));
+    },
+
+    _evtOnMove: function (e) {
+      log('mouse:point', 'x: ' + e.point.x + ', y:' + e.point.y);
+      log('mouse:coords', 'lng: ' + e.lngLat.lng + ', lat:' + e.lngLat.lat);
+
+      if (this.isDragging || this._isDraggingHandle()) {
+        return this._onDrag(e);
+      } else {
+
+        let handleOverState = this.resizeHandles.ne.checkOver(e.lngLat) || this.resizeHandles.sw.checkOver(e.lngLat);
+
+        if (handleOverState) {
+          log('over:handle', handleOverState);
+          this.map.dragPan.disable();
+          return;
+        }
+
+        // Reset stored coords.
+        this.prevMouseCoords = null;
+        // Check if in square.
+        let {lng, lat} = e.lngLat;
+
+        let left = Math.min(this.ne.lng, this.sw.lng);
+        let top = Math.max(this.ne.lat, this.sw.lat);
+        let right = Math.max(this.ne.lng, this.sw.lng);
+        let bottom = Math.min(this.ne.lat, this.sw.lat);
+
+        if (lng >= left && lng <= right && lat <= top && lat >= bottom) {
+          this.isOverBox = true;
+          log('hover', true);
+          // canvas.style.cursor = 'move';
+          this.map.dragPan.disable();
+        } else {
+          this.isOverBox = false;
+          log('hover', false);
+          // canvas.style.cursor = '';
+          this.map.dragPan.enable();
+        }
+      }
+    },
+
+    _evtOnZoom: function (e) {
+      // Handles must stay the same size regardless of zoom level.
+      // Update handles.
+      this.resizeHandles.ne.updateAnchor(this.ne);
+      this.resizeHandles.sw.updateAnchor(this.sw);
+      // // DEBUG DEBUG__handles.
+      this.DEBUG__handles();
+    },
+
+    _evtOnDown: function (e) {
+      if (this._isOverHandle()) {
+        return this._setOverHandleAsDragging();
+      }
+
+      if (!this.isOverBox) return;
+
+      this.isDragging = true;
+      log('dragging', true);
+
+      // Set a cursor indicator
+      // canvas.style.cursor = 'grab';
+    },
+
+    _evtOnUp: function (e) {
+      // if (!this.isDragging) return;
+      this._resetOverHandleAsDragging();
+      // canvas.style.cursor = '';
+      this.isDragging = false;
+      log('dragging', false);
+    },
+
+    _isOverHandle: function () {
+      return this.resizeHandles.ne.isOver ||
+        this.resizeHandles.sw.isOver;
+    },
+
+    _isDraggingHandle: function () {
+      return this.resizeHandles.ne.isDragging ||
+        this.resizeHandles.sw.isDragging;
+    },
+
+    _setOverHandleAsDragging: function () {
+      if (this.resizeHandles.ne.isOver) {
+        this.resizeHandles.ne.isDragging = true;
+        log('dragging:handle', true);
+      }
+      if (this.resizeHandles.sw.isOver) {
+        this.resizeHandles.sw.isDragging = true;
+        log('dragging:handle', true);
+      }
+    },
+
+    _resetOverHandleAsDragging: function () {
+      this.resizeHandles.ne.isDragging = false;
+      this.resizeHandles.sw.isDragging = false;
+      log('dragging:handle', false);
+    },
+
+    _onDrag: function (e) {
+      var currCoords = e.point;
+      if (!this.prevMouseCoords) {
+        this.prevMouseCoords = currCoords;
+      }
+
+      var dx = currCoords.x - this.prevMouseCoords.x;
+      var dy = currCoords.y - this.prevMouseCoords.y;
+
+      let dl = 0;
+      let dt = 0;
+      let dr = 0;
+      let db = 0;
+
+      // Update bounds according to direction deltas.
+      if (this.resizeHandles.ne.isDragging) {
+        dl = dx;
+        dt = dy;
+      } else if (this.resizeHandles.sw.isDragging) {
+        dr = dx;
+        db = dy;
+      } else {
+        dl = dx;
+        dt = dy;
+        dr = dx;
+        db = dy;
+      }
+
+      let [ne, sw] = this._computeBounds([this.ne, this.sw], dl, dt, dr, db);
+
+      this.ne = ne;
+      this.sw = sw;
+
+      // Update handles.
+      this.resizeHandles.ne.updateAnchor(this.ne);
+      this.resizeHandles.sw.updateAnchor(this.sw);
+
+      // Update the Point feature in `geojson` coordinates
+      // and call setData to the source layer `point` on it.
+      this.map
+        .getSource('ghost')
+        .setData(this._getHighlightFeature(this.ne.lng, this.ne.lat, this.sw.lng, this.sw.lat));
+
+      // // DEBUG DEBUG__handles.
+      this.DEBUG__handles();
+
+      this.prevMouseCoords = currCoords;
+    },
+
+    // Update the given bounds according to direction deltas.
+    _computeBounds: function (bounds, dl, dt, dr, db) {
+      let [ne, sw] = bounds;
+      let nePx = this.map.project(ne);
+      let swPx = this.map.project(sw);
+
+      nePx.x += dl;
+      nePx.y += dt;
+      swPx.x += dr;
+      swPx.y += db;
+
+      return [this.map.unproject(nePx), this.map.unproject(swPx)];
+    },
+
+    _computeHighlightBoxCoords: function (left, top, right, bottom) {
+      return [
+        [
+          [-180, -90],
+          [-180, 90],
+          [180, 90],
+          [180, -90],
+          [-180, -90]
+        ],
+        [
+          [left, bottom],
+          [left, top],
+          [right, top],
+          [right, bottom],
+          [left, bottom]
+        ]
+      ];
+    },
+
+    _getHighlightFeature: function (left, top, right, bottom) {
+      return {
+        'type': 'Feature',
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': this._computeHighlightBoxCoords(left, top, right, bottom)
+        }
+      };
+    },
+
+    DEBUG__handles: function () {
+      var geoJSONne = {
+        'type': 'Feature',
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [
+            this.resizeHandles.ne.getProjectedPolyCoords(this.map)
+          ]
+        }
+      };
+
+      var geoJSONsw = {
+        'type': 'Feature',
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [
+            this.resizeHandles.sw.getProjectedPolyCoords(this.map)
+          ]
+        }
+      };
+
+      // Add if not there.
+      if (!this.map.getLayer('resizeHandlesNe')) {
+        this.map.addSource('resizeHandlesSourceNe', {
+          'type': 'geojson',
+          'data': geoJSONne
+        });
+        this.map.addSource('resizeHandlesSourceSw', {
+          'type': 'geojson',
+          'data': geoJSONsw
+        });
+
+        this.map.addLayer({
+          'id': 'resizeHandlesNe',
+          'type': 'fill',
+          'source': 'resizeHandlesSourceNe',
+          'layout': {},
+          'paint': {
+            'fill-color': '#F00',
+            'fill-opacity': 0.5
+          }
+        });
+
+        this.map.addLayer({
+          'id': 'resizeHandlesSw',
+          'type': 'fill',
+          'source': 'resizeHandlesSourceSw',
+          'layout': {},
+          'paint': {
+            'fill-color': '#FF0',
+            'fill-opacity': 0.5
+          }
+        });
+      } else {
+        this.map
+          .getSource('resizeHandlesSourceNe')
+          .setData(geoJSONne);
+        this.map
+          .getSource('resizeHandlesSourceSw')
+          .setData(geoJSONsw);
+      }
+    }
+  });
+
+  function LightBoxHandle (options) {
+    this.options = {
+      width: 10,
+      height: 10
+    };
+
+    this.options = _.extend({}, this.options, options);
+
+    this.map = this.options.map;
+
+    this.isOver = false;
+    this.isDragging = false;
+
+    this.updateAnchor = function (lnglat) {
+      let {width, height} = this.options;
+      let center = this.map.project(lnglat);
+
+      let ne = center.clone();
+      ne.x -= width / 2;
+      ne.y -= height / 2;
+
+      let sw = center.clone();
+      sw.x += width / 2;
+      sw.y += height / 2;
+
+      this.ne = this.map.unproject(ne);
+      this.sw = this.map.unproject(sw);
+
+      log('handle:ne', 'lng: ' + this.ne.lng + ', lat:' + this.ne.lat);
+      log('handle:sw', 'lng: ' + this.sw.lng + ', lat:' + this.sw.lat);
+    };
+
+    this.checkOver = function (lnglat) {
+      let {lng, lat} = lnglat;
+      this.isOver = (lng >= this.ne.lng && lng <= this.sw.lng && lat <= this.ne.lat && lat >= this.sw.lat);
+      return this.isOver;
+    };
+
+    this.getProjectedPolyCoords = function () {
+      let left = this.ne.lng;
+      let top = this.ne.lat;
+      let right = this.sw.lng;
+      let bottom = this.sw.lat;
+
+      return [
+        [left, bottom],
+        [left, top],
+        [right, top],
+        [right, bottom],
+        [left, bottom]
+      ];
+    };
+
+    this.updateAnchor(this.options.anchor);
+  }
+
+</script>
+
+
+<script>
+var map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/streets-v9',
+  center: [-98, 38.88],
+  minZoom: 2,
+  zoom: 3
+});
+
+// Disable default box zooming.
+map.boxZoom.disable();
+
+var lightBox = new LightBox();
+map.addControl(lightBox);
+
+map.on('load', function () {
+  lightBox.enable();
+});
+
+</script>
+</body>
+</html>
