@@ -22,7 +22,7 @@ There were a couple of problems with this approach:
 
 The [second attempt](https://danielfdsilva.github.io/map-lightbox-experiment/geojsonpx.html) was built on top of the first so it still uses a polygon and the same technique. However in this case the calculation is being done with pixels so the box size does not change. Performance is still an issue.
 
-![geojson example](docs/geojsopx.gif)
+![geojson example](docs/geojsonpx.gif)
 
 With this attempt the drag handles were added and this raised another problem.
 Since the polygon is bound to the map by the coordinates, when zooming in its apparent size changes but the covered area stays the same.
