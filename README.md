@@ -5,7 +5,7 @@ Not having found anything similar I decided to build my own. This is an outline 
 
 I'm using [Mapbox GL JS](https://www.mapbox.com/mapbox-gl-js/api/) for the map.
 
-### You may NOT use this code
+### You should not use this code
 The code in these examples is not production ready, so I'd advise against using it. However feel free to get ideas from and improve it.
 
 ## First attempt: GeoJSON
