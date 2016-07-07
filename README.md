@@ -1,4 +1,4 @@
-# Map Lighbox - an experiment 
+# Map Lightbox - an experiment 
 
 I needed something that allowed me to highlight an area on a map. This highlight box had to be draggable and resizable.
 Not having found anything similar I decided to build my own. This is an outline of the challenges I faced.
